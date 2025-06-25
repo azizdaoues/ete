@@ -49,64 +49,74 @@ class TenantRegistrationController extends Controller
                         ->withInput();
         }
 
-        DB::beginTransaction();
+        $validated = $validator->validated();
+        $subdomain = $validated['subdomain'];
+        $databaseName = 'tenant_' . $subdomain;
+
         try {
-            $tenant = $this->createTenant($validator->validated());
-            $this->createTenantAdmin($tenant, $validator->validated());
+            // 1. Création de la base de données (hors transaction)
+            $exists = DB::select("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?", [$databaseName]);
+            if ($exists) {
+                return redirect()->route('tenant.register')
+                    ->withErrors(['subdomain' => 'Ce sous-domaine est déjà utilisé.'])
+                    ->withInput();
+            }
+            DB::statement("CREATE DATABASE `$databaseName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+
+            // 2. Création du tenant (transaction sur la connexion principale)
+            DB::beginTransaction();
+            $tenant = Tenant::create([
+                'name' => $validated['company_name'],
+                'subdomain' => $subdomain,
+                'database' => $databaseName,
+                'is_active' => true,
+            ]);
             DB::commit();
+
+            // 3. Configurer la connexion et lancer les migrations (hors transaction)
+            Config::set('database.connections.tenant.database', $databaseName);
+            DB::purge('tenant');
+            DB::reconnect('tenant');
+            Artisan::call('migrate', [
+                '--database' => 'tenant',
+                '--path' => 'database/migrations',
+                '--force' => true,
+            ]);
+
+            // 4. Création de l'admin (transaction sur la connexion tenant)
+            DB::connection('tenant')->beginTransaction();
+            DB::connection('tenant')->table('users')->insert([
+                'name' => $validated['admin_name'],
+                'email' => $validated['admin_email'],
+                'password' => Hash::make($validated['admin_password']),
+                'is_admin' => true,
+                'tenant_id' => $tenant->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::connection('tenant')->commit();
+
         } catch (\Exception $e) {
-            DB::rollBack();
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            if (DB::connection('tenant')->transactionLevel() > 0) {
+                DB::connection('tenant')->rollBack();
+            }
             return redirect()->route('tenant.register')
-                        ->withErrors(['error' => 'Une erreur est survenue lors de la création de votre espace: ' . $e->getMessage()])
-                        ->withInput();
+                ->withErrors(['error' => 'Une erreur est survenue lors de la création de votre espace: ' . $e->getMessage()])
+                ->withInput();
         }
 
         $domain = config('app.domain', 'localhost');
         $port = $request->getPort();
-        $loginUrl = "http://{$tenant->subdomain}.{$domain}:{$port}/login";
+        $loginUrl = "http://{$subdomain}.{$domain}:{$port}/login";
 
         // Mettre les informations en session flash pour la page de succès
         return redirect()->route('tenant.register.success')->with([
             'tenant_name' => $tenant->name,
             'login_url' => $loginUrl,
             'admin_email' => $request->admin_email,
-        ]);
-    }
-
-    private function createTenant(array $validatedData): Tenant
-    {
-        $tenant = Tenant::create([
-            'name' => $validatedData['company_name'],
-            'subdomain' => $validatedData['subdomain'],
-            'database' => 'tenant_' . $validatedData['subdomain'],
-            'is_active' => true,
-        ]);
-        
-        $databaseName = $tenant->database;
-        DB::statement("CREATE DATABASE `$databaseName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-        
-        Config::set('database.connections.tenant.database', $databaseName);
-        DB::purge('tenant');
-
-        Artisan::call('migrate', [
-            '--database' => 'tenant',
-            '--path' => 'database/migrations',
-            '--force' => true,
-        ]);
-        
-        return $tenant;
-    }
-
-    private function createTenantAdmin(Tenant $tenant, array $validatedData): void
-    {
-        DB::connection('tenant')->table('users')->insert([
-            'name' => $validatedData['admin_name'],
-            'email' => $validatedData['admin_email'],
-            'password' => Hash::make($validatedData['admin_password']),
-            'is_admin' => true,
-            'tenant_id' => $tenant->id, // Important for consistency
-            'created_at' => now(),
-            'updated_at' => now(),
         ]);
     }
 }

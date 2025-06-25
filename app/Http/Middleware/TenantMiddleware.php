@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\Artisan;
 
 class TenantMiddleware
 {
@@ -54,7 +55,7 @@ class TenantMiddleware
             });
 
             // Lancer les migrations Laravel pour créer les tables
-            $this->call('migrate', [
+            \Artisan::call('migrate', [
                 '--database' => 'tenant',
                 '--path' => 'database/migrations',
                 '--realpath' => true,

@@ -35,43 +35,39 @@ class RegisterController extends Controller
             'password.min' => 'Le mot de passe doit contenir au moins 8 caractères.'
         ]);
 
+        $subdomain = Str::slug($request->subdomain);
+        $tenantDb = 'tenant_' . $subdomain;
+
         try {
-            DB::beginTransaction();
-
-            // Nettoyer le sous-domaine
-            $subdomain = Str::slug($request->subdomain);
-            $this->currentTenantDatabase = 'tenant_' . $subdomain;
-
-            // Vérifier si la base existe déjà
-            $exists = DB::select("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?", [$this->currentTenantDatabase]);
+            // 1. Création de la base de données (hors transaction)
+            $exists = DB::select("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?", [$tenantDb]);
             if ($exists) {
                 return back()->withErrors(['subdomain' => 'Ce sous-domaine est déjà utilisé.'])->withInput();
             }
+            DB::statement("CREATE DATABASE `{$tenantDb}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
 
-            // Créer la base de données MySQL
-            DB::statement("CREATE DATABASE `{$this->currentTenantDatabase}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-
-            // Créer le tenant
+            // 2. Création du tenant (transaction sur la connexion principale)
+            DB::beginTransaction();
             $tenant = Tenant::create([
                 'name' => $request->company_name,
                 'subdomain' => $subdomain,
-                'database' => $this->currentTenantDatabase,
+                'database' => $tenantDb,
                 'is_active' => true
             ]);
+            DB::commit();
 
-            // Configurer la connexion à la base de données du tenant
-            config(['database.connections.tenant.database' => $this->currentTenantDatabase]);
+            // 3. Configurer la connexion et lancer les migrations (hors transaction)
+            config(['database.connections.tenant.database' => $tenantDb]);
             DB::purge('tenant');
             DB::reconnect('tenant');
-
-            // Lancer les migrations Laravel
             Artisan::call('migrate', [
                 '--database' => 'tenant',
                 '--path' => 'database/migrations',
                 '--force' => true,
             ]);
 
-            // Créer l'utilisateur administrateur
+            // 4. Création de l'admin (transaction sur la connexion tenant)
+            DB::connection('tenant')->beginTransaction();
             $userId = DB::connection('tenant')->table('users')->insertGetId([
                 'name' => $request->admin_name,
                 'email' => $request->admin_email,
@@ -82,11 +78,10 @@ class RegisterController extends Controller
                 'created_at' => now(),
                 'updated_at' => now()
             ]);
+            DB::connection('tenant')->commit();
 
-            // Créer les tables de configuration du tenant
+            // 5. Créer les tables de configuration du tenant
             $this->createTenantConfigTables($tenant->id, $request->plan);
-
-            DB::commit();
 
             // Message de succès avec les informations de connexion
             $successMessage = "🎉 Votre espace entreprise a été créé avec succès !\n\n";
@@ -99,9 +94,14 @@ class RegisterController extends Controller
             return redirect()->route('login')->with('success', $successMessage);
 
         } catch (\Exception $e) {
-            DB::rollBack();
-            
-            return back()->withErrors(['error' => 'Une erreur est survenue lors de la création de votre espace. Veuillez réessayer.'])->withInput();
+            // Rollback uniquement si la transaction est active
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            if (DB::connection('tenant')->transactionLevel() > 0) {
+                DB::connection('tenant')->rollBack();
+            }
+            return back()->withErrors(['error' => 'Une erreur est survenue lors de la création de votre espace: ' . $e->getMessage()])->withInput();
         }
     }
 
