@@ -261,4 +261,3 @@ pipeline {
             // Notifications d'avertissement
         }
     }
-}
