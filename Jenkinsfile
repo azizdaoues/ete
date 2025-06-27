@@ -4,7 +4,7 @@ pipeline {
     environment {
         SONARQUBE_SERVER = 'ayoub' 
         DOCKER_IMAGE = "laravel-app:latest"
-        DOCKER_REGISTRY = "" // Ajoutez votre registry si nécessaire
+        DOCKER_REGISTRY = ""
     }
 
     stages {
@@ -19,14 +19,11 @@ pipeline {
                 script {
                     try {
                         sh '''
-                            # Vérifier si composer est installé
                             if ! command -v composer &> /dev/null; then
                                 echo "Installing Composer..."
                                 curl -sS https://getcomposer.org/installer | php
                                 sudo mv composer.phar /usr/local/bin/composer
                             fi
-                            
-                            # Installer les dépendances Laravel
                             composer install --no-dev --optimize-autoloader
                         '''
                     } catch (Exception e) {
@@ -58,10 +55,8 @@ pipeline {
                 script {
                     try {
                         sh '''
-                            # Vérifier si Trivy est installé
                             if ! command -v trivy &> /dev/null; then
                                 echo "Installing Trivy..."
-                                # Pour Ubuntu/Debian
                                 if command -v apt-get &> /dev/null; then
                                     sudo apt-get update
                                     sudo apt-get install -y wget apt-transport-https gnupg lsb-release
@@ -69,7 +64,6 @@ pipeline {
                                     echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
                                     sudo apt-get update
                                     sudo apt-get install -y trivy
-                                # Alternative: utiliser Docker
                                 else
                                     echo "Using Trivy via Docker"
                                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
@@ -77,23 +71,17 @@ pipeline {
                                     exit 0
                                 fi
                             fi
-                            
-                            # Scanner l'image Docker
                             trivy image --exit-code 0 --severity HIGH,CRITICAL --format json --output trivy-report.json $DOCKER_IMAGE
-                            
-                            # Afficher un résumé
                             echo "Trivy scan completed. Check trivy-report.json for details."
                         '''
                     } catch (Exception e) {
                         echo "Trivy scan failed: ${e.getMessage()}"
-                        // Ne pas faire échouer le build pour les vulnérabilités
                         currentBuild.result = 'UNSTABLE'
                     }
                 }
             }
             post {
                 always {
-                    // Archiver le rapport Trivy s'il existe
                     script {
                         if (fileExists('trivy-report.json')) {
                             archiveArtifacts artifacts: 'trivy-report.json', fingerprint: true
@@ -108,16 +96,11 @@ pipeline {
                 script {
                     try {
                         sh '''
-                            # Installer les dépendances de développement pour les tests
                             composer install --dev
-                            
-                            # Copier le fichier d'environnement pour les tests
                             if [ ! -f .env ]; then
                                 cp .env.example .env
                                 php artisan key:generate
                             fi
-                            
-                            # Exécuter les tests unitaires
                             vendor/bin/phpunit --testdox
                         '''
                     } catch (Exception e) {
@@ -128,7 +111,6 @@ pipeline {
             }
             post {
                 always {
-                    // Publier les résultats des tests si disponibles
                     script {
                         if (fileExists('tests/results.xml')) {
                             publishTestResults testResultsPattern: 'tests/results.xml'
@@ -144,10 +126,7 @@ pipeline {
                     try {
                         withSonarQubeEnv(SONARQUBE_SERVER) {
                             sh '''
-                                # Générer le rapport de couverture
                                 vendor/bin/phpunit --coverage-clover=coverage.xml
-                                
-                                # Vérifier si sonar-scanner est installé
                                 if ! command -v sonar-scanner &> /dev/null; then
                                     echo "Installing SonarQube Scanner..."
                                     wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
@@ -155,8 +134,6 @@ pipeline {
                                     sudo mv sonar-scanner-4.8.0.2856-linux /opt/sonar-scanner
                                     sudo ln -s /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
                                 fi
-                                
-                                # Exécuter l'analyse SonarQube
                                 sonar-scanner \
                                     -Dsonar.projectKey=monprojet \
                                     -Dsonar.php.coverage.reportPaths=coverage.xml \
@@ -194,12 +171,9 @@ pipeline {
                 script {
                     try {
                         sh '''
-                            # Installer Infection globalement s'il n'est pas présent
                             if ! command -v infection &> /dev/null; then
                                 composer global require infection/infection
                             fi
-                            
-                            # Exécuter les tests de mutation
                             ~/.composer/vendor/bin/infection --threads=2 --min-msi=80 --min-covered-msi=80 --only-covered
                         '''
                     } catch (Exception e) {
@@ -221,13 +195,9 @@ pipeline {
                 script {
                     try {
                         sh '''
-                            # Arrêter les anciens conteneurs s'ils existent
                             docker stop $(docker ps -q --filter ancestor=$DOCKER_IMAGE) || true
                             docker rm $(docker ps -aq --filter ancestor=$DOCKER_IMAGE) || true
-                            
-                            # Déployer le nouveau conteneur
                             docker run -d --name laravel-app-$(date +%s) -p 9000:9000 $DOCKER_IMAGE
-                            
                             echo "Application deployed successfully on port 9000"
                         '''
                     } catch (Exception e) {
@@ -242,7 +212,6 @@ pipeline {
 
     post {
         always {
-            // Nettoyer les ressources
             sh '''
                 docker system prune -f || true
                 rm -rf coverage.xml trivy-report.json || true
@@ -250,14 +219,12 @@ pipeline {
         }
         success {
             echo 'Pipeline completed successfully!'
-            // Vous pouvez ajouter des notifications ici
         }
         failure {
             echo 'Pipeline failed!'
-            // Notifications d'échec
         }
         unstable {
             echo 'Pipeline completed with warnings!'
-            // Notifications d'avertissement
         }
     }
+}
