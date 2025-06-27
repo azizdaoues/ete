@@ -1,0 +1,68 @@
+pipeline {
+    agent any
+
+    environment {
+        SONARQUBE_SERVER = 'ayoub' 
+        DOCKER_IMAGE = "laravel-app:latest"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh 'docker build -t $DOCKER_IMAGE .'
+                sh 'trivy image --exit-code 1 --severity HIGH,CRITICAL $DOCKER_IMAGE'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'composer install'
+                    sh 'vendor/bin/phpunit --coverage-clover=coverage.xml'
+                    sh '''
+                        sonar-scanner \
+                        -Dsonar.projectKey=monprojet \
+                        -Dsonar.php.coverage.reportPaths=coverage.xml \
+                        -Dsonar.sources=app \
+                        -Dsonar.tests=tests \
+                        -Dsonar.host.url=$SONAR_HOST_URL \
+                        -Dsonar.login=$SONAR_AUTH_TOKEN
+                    '''
+                }
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh 'vendor/bin/phpunit'
+            }
+        }
+
+        stage('Mutation Tests') {
+            steps {
+                sh 'composer global require infection/infection'
+                sh '~/.composer/vendor/bin/infection --threads=2 --min-msi=80 --min-covered-msi=80'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'docker build -t $DOCKER_IMAGE .'
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                // Exemple de déploiement Docker
+                sh 'docker run -d --rm -p 9000:9000 $DOCKER_IMAGE'
+                // Ou déploiement SSH, etc.
+            }
+        }
+    }
+}
