@@ -261,8 +261,4 @@ pipeline {
             // Notifications d'avertissement
         }
     }
-<<<<<<< HEAD
-}
-=======
-}
->>>>>>> 65aa2f0 (Ajout de la nouvelle vue pour la fonctionnalité X)
+
